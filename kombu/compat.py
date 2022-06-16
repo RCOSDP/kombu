@@ -114,7 +114,8 @@ class Consumer(messaging.Consumer):
                       routing_key=self.routing_key,
                       durable=self.durable,
                       exclusive=self.exclusive,
-                      auto_delete=self.auto_delete)
+                      auto_delete=self.auto_delete,
+                      queue_arguments={'x-queue-type' :'quorum'})
         super(Consumer, self).__init__(self.backend, queue, **kwargs)
 
     def revive(self, channel):
