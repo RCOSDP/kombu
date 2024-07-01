@@ -1,18 +1,63 @@
-from __future__ import absolute_import, unicode_literals
+from __future__ import annotations
 
 import socket
 from contextlib import closing
 from time import sleep
 
 import pytest
+
 import kombu
 
 
-class BasicFunctionality(object):
+class BasicFunctionality:
 
     def test_connect(self, connection):
+        assert connection.connect()
+        assert connection.connection
+        connection.close()
+        assert connection.connection is None
+        assert connection.connect()
+        assert connection.connection
+        connection.close()
+
+    def test_failed_connect(self, invalid_connection):
+        # method raises transport exception
+        with pytest.raises(Exception):
+            invalid_connection.connect()
+
+    def test_failed_connection(self, invalid_connection):
+        # method raises transport exception
+        with pytest.raises(Exception):
+            invalid_connection.connection
+
+    def test_failed_channel(self, invalid_connection):
+        # method raises transport exception
+        with pytest.raises(Exception):
+            invalid_connection.channel()
+
+    def test_failed_default_channel(self, invalid_connection):
+        invalid_connection.transport_options = {'max_retries': 1}
+        # method raises transport exception
+        with pytest.raises(Exception):
+            invalid_connection.default_channel
+
+    def test_default_channel_autoconnect(self, connection):
         connection.connect()
         connection.close()
+        assert connection.connection is None
+        assert connection.default_channel
+        assert connection.connection
+        connection.close()
+
+    def test_channel(self, connection):
+        chan = connection.channel()
+        assert chan
+        assert connection.connection
+
+    def test_default_channel(self, connection):
+        chan = connection.default_channel
+        assert chan
+        assert connection.connection
 
     def test_publish_consume(self, connection):
         test_queue = kombu.Queue('test', routing_key='test')
@@ -83,7 +128,7 @@ class BasicFunctionality(object):
                 message.ack()
 
 
-class BaseExchangeTypes(object):
+class BaseExchangeTypes:
 
     def _callback(self, body, message):
         message.ack()
@@ -93,27 +138,34 @@ class BaseExchangeTypes(object):
         message.delivery_info['exchange'] == ''
         assert message.payload == body
 
-    def _consume(self, connection, queue):
+    def _create_consumer(self, connection, queue):
         consumer = kombu.Consumer(
             connection, [queue], accept=['pickle']
         )
         consumer.register_callback(self._callback)
+        return consumer
+
+    def _consume_from(self, connection, consumer):
         with consumer:
             connection.drain_events(timeout=1)
 
-    def _publish(self, channel, exchange, queues, routing_key=None):
+    def _consume(self, connection, queue):
+        with self._create_consumer(connection, queue):
+            connection.drain_events(timeout=1)
+
+    def _publish(self, channel, exchange, queues=None, routing_key=None):
         producer = kombu.Producer(channel, exchange=exchange)
         if routing_key:
             producer.publish(
                 {'hello': 'world'},
-                declare=list(queues),
+                declare=list(queues) if queues else None,
                 serializer='pickle',
                 routing_key=routing_key
             )
         else:
             producer.publish(
                 {'hello': 'world'},
-                declare=list(queues),
+                declare=list(queues) if queues else None,
                 serializer='pickle'
             )
 
@@ -136,6 +188,13 @@ class BaseExchangeTypes(object):
                 self._publish(channel, ex, [test_queue1, test_queue2], 'd1')
                 self._consume(conn, test_queue1)
                 # direct2 queue should not have data
+                with pytest.raises(socket.timeout):
+                    self._consume(conn, test_queue2)
+                # test that publishing using key which is not used results in
+                # discarted message.
+                self._publish(channel, ex, [test_queue1, test_queue2], 'd3')
+                with pytest.raises(socket.timeout):
+                    self._consume(conn, test_queue1)
                 with pytest.raises(socket.timeout):
                     self._consume(conn, test_queue2)
 
@@ -163,15 +222,23 @@ class BaseExchangeTypes(object):
                     channel, ex, [test_queue1, test_queue2, test_queue3],
                     routing_key='t.1'
                 )
-
                 self._consume(conn, test_queue1)
                 self._consume(conn, test_queue2)
                 with pytest.raises(socket.timeout):
                     # topic3 queue should not have data
                     self._consume(conn, test_queue3)
 
+    def test_publish_empty_exchange(self, connection):
+        ex = kombu.Exchange('test_empty_exchange', type='topic')
+        with connection as conn:
+            with conn.channel() as channel:
+                self._publish(
+                    channel, ex,
+                    routing_key='t.1'
+                )
 
-class BaseTimeToLive(object):
+
+class BaseTimeToLive:
     def test_publish_consume(self, connection):
         test_queue = kombu.Queue('ttl_test', routing_key='ttl_test')
 
@@ -219,7 +286,7 @@ class BaseTimeToLive(object):
                     buf.get(timeout=1)
 
 
-class BasePriority(object):
+class BasePriority:
 
     PRIORITY_ORDER = 'asc'
 
@@ -339,18 +406,59 @@ class BasePriority(object):
                     assert msg.payload == data
 
 
+class BaseMessage:
+
+    def test_ack(self, connection):
+        with connection as conn:
+            with closing(conn.SimpleQueue('test_ack')) as queue:
+                queue.put({'Hello': 'World'}, headers={'k1': 'v1'})
+                message = queue.get_nowait()
+                message.ack()
+                with pytest.raises(queue.Empty):
+                    queue.get_nowait()
+
+    def test_reject_no_requeue(self, connection):
+        with connection as conn:
+            with closing(conn.SimpleQueue('test_reject_no_requeue')) as queue:
+                queue.put({'Hello': 'World'}, headers={'k1': 'v1'})
+                message = queue.get_nowait()
+                message.reject(requeue=False)
+                with pytest.raises(queue.Empty):
+                    queue.get_nowait()
+
+    def test_reject_requeue(self, connection):
+        with connection as conn:
+            with closing(conn.SimpleQueue('test_reject_requeue')) as queue:
+                queue.put({'Hello': 'World'}, headers={'k1': 'v1'})
+                message = queue.get_nowait()
+                message.reject(requeue=True)
+                message2 = queue.get_nowait()
+                assert message.body == message2.body
+                message2.ack()
+
+    def test_requeue(self, connection):
+        with connection as conn:
+            with closing(conn.SimpleQueue('test_requeue')) as queue:
+                queue.put({'Hello': 'World'}, headers={'k1': 'v1'})
+                message = queue.get_nowait()
+                message.requeue()
+                message2 = queue.get_nowait()
+                assert message.body == message2.body
+                message2.ack()
+
+
 class BaseFailover(BasicFunctionality):
 
     def test_connect(self, failover_connection):
-        super(BaseFailover, self).test_connect(failover_connection)
+        super().test_connect(failover_connection)
 
     def test_publish_consume(self, failover_connection):
-        super(BaseFailover, self).test_publish_consume(failover_connection)
+        super().test_publish_consume(failover_connection)
 
     def test_consume_empty_queue(self, failover_connection):
-        super(BaseFailover, self).test_consume_empty_queue(failover_connection)
+        super().test_consume_empty_queue(failover_connection)
 
     def test_simple_buffer_publish_consume(self, failover_connection):
-        super(BaseFailover, self).test_simple_buffer_publish_consume(
+        super().test_simple_buffer_publish_consume(
             failover_connection
         )

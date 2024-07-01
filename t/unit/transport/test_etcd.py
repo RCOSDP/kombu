@@ -1,18 +1,18 @@
-from __future__ import absolute_import, unicode_literals
+from __future__ import annotations
+
+from queue import Empty
+from unittest.mock import Mock, patch
 
 import pytest
 
-from case import Mock, patch, skip
-
-from kombu.five import Empty
-
 from kombu.transport.etcd import Channel, Transport
 
+pytest.importorskip('etcd')
 
-@skip.unless_module('etcd')
+
 class test_Etcd:
 
-    def setup(self):
+    def setup_method(self):
         self.connection = Mock()
         self.connection.client.transport_options = {}
         self.connection.client.port = 2739
