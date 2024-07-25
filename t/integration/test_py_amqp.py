@@ -1,24 +1,28 @@
-from __future__ import absolute_import, unicode_literals
+from __future__ import annotations
 
 import os
 
 import pytest
+
 import kombu
 
-from .common import (
-    BasicFunctionality, BaseExchangeTypes,
-    BaseTimeToLive, BasePriority, BaseFailover
-)
+from .common import (BaseExchangeTypes, BaseFailover, BaseMessage,
+                     BasePriority, BaseTimeToLive, BasicFunctionality)
 
 
 def get_connection(hostname, port, vhost):
-    return kombu.Connection('pyamqp://{}:{}'.format(hostname, port))
+    return kombu.Connection(f'pyamqp://{hostname}:{port}')
 
 
 def get_failover_connection(hostname, port, vhost):
     return kombu.Connection(
-        'pyamqp://localhost:12345;pyamqp://{}:{}'.format(hostname, port)
+        f'pyamqp://localhost:12345;pyamqp://{hostname}:{port}'
     )
+
+
+@pytest.fixture()
+def invalid_connection():
+    return kombu.Connection('pyamqp://localhost:12345')
 
 
 @pytest.fixture()
@@ -70,4 +74,10 @@ class test_PyAMQPPriority(BasePriority):
 @pytest.mark.env('py-amqp')
 @pytest.mark.flaky(reruns=5, reruns_delay=2)
 class test_PyAMQPFailover(BaseFailover):
+    pass
+
+
+@pytest.mark.env('py-amqp')
+@pytest.mark.flaky(reruns=5, reruns_delay=2)
+class test_PyAMQPMessage(BaseMessage):
     pass
